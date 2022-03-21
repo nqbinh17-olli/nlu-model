@@ -6,13 +6,13 @@ from transformers import BertModel
 import torch.utils.checkpoint as checkpoint
 
 class Classifier(nn.Module):
-    def __init__(self, config, num_intent, num_slot):
+    def __init__(self, config):
         super(Classifier, self).__init__()
         self.bert_dim = config.bert_dim
         self.checkpoint_batch_size = config.checkpoint_batch_size
-        self.num_intent = num_intent
-        self.num_slot = num_slot
-        self.sent_encoder = BertModel.from_pretrained('bert-base-multilingual-cased')
+        self.num_intent = config.num_intent
+        self.num_slot = config.num_slot
+        self.sent_encoder = BertModel.from_pretrained(config.from_pretrained)
 
         self.mlp_intent = Linear(self.bert_dim, self.num_intent, bias = True)
         self.mlp_slot = Linear(self.bert_dim, self.num_slot, bias = True)
@@ -59,12 +59,18 @@ class Classifier(nn.Module):
         
         score_intent = self.mlp_intent(sent_embed)
         score_slot = self.mlp_slot(x_embed)
-        
-        score_slot = (score_slot * x_mask.unsqueeze(-1)).reshape(-1, self.num_slot)
+
+        predict_masked = (x_ids == 101) | (x_ids == 102)
+        predict_masked = (x_mask - predict_masked.type(x_mask.dtype)).unsqueeze(-1)
+        score_slot = (score_slot * predict_masked).reshape(-1, self.num_slot)
         loss = None
         if label_intent is not None:
             loss_intent = self.ce_loss(score_intent, label_intent)
+            loss = loss_intent
+        if label_slot is not None:
             loss_slot = self.ce_loss(score_slot, label_slot)
-            loss = loss_intent + loss_slot
-            
+            if loss is not None:
+                loss += loss_slot
+            else:
+                loss = loss_slot
         return loss, score_intent, score_slot

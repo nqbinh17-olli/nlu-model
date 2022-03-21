@@ -21,10 +21,13 @@ def trainer_process(data, model, device, metrics_intent, metrics_slot, f1_intent
     label_intent = data['intent']
     label_slot = data['slot_label'].reshape(-1)
     types = data["types"]
+    if label_intent[0] is None:
+        label_intent = None
+    else:
+        label_intent = label_intent.to(device)
     
     mask = mask.to(device)
     ids = ids.to(device)
-    label_intent = label_intent.to(device)
     label_slot = label_slot.to(device)
     types = types.to(device)
 
@@ -33,12 +36,12 @@ def trainer_process(data, model, device, metrics_intent, metrics_slot, f1_intent
         # predict & compute f1-score
         predict_intent = torch.max(torch.softmax(score_intent, dim=-1),dim=1).indices
         predict_slot = torch.max(torch.softmax(score_slot, dim=-1),dim=-1).indices
-        macro_f1_intent, _ = f1_intent(predict_intent, label_intent, 'macro')
         macro_f1_slot, _ = f1_slot(predict_slot, label_slot, 'macro')
         
-
+        if label_intent is not None:
+            macro_f1_intent, _ = f1_intent(predict_intent, label_intent, 'macro')
+            metrics_intent.update(loss=loss.data.item(), macro_f1=macro_f1_intent.data.item())
         # update loss & f1-score
-        metrics_intent.update(loss=loss.data.item(), macro_f1=macro_f1_intent.data.item())
         metrics_slot.update(loss=loss.data.item(), macro_f1=macro_f1_slot.data.item())
     
     batch = ids.size(0)
@@ -46,7 +49,7 @@ def trainer_process(data, model, device, metrics_intent, metrics_slot, f1_intent
         return tensor.detach().cpu().reshape(batch, -1).tolist()
     
     info = {"ids": ids.detach().cpu(), "text": text,
-            "label_intent": convert_to_form(label_intent),
+            "label_intent": convert_to_form(label_intent) if label_intent is not None else None,
             "label_slot": convert_to_form(label_slot),
             "predict_intent": convert_to_form(predict_intent),
             "predict_slot": convert_to_form(predict_slot)

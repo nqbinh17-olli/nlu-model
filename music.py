@@ -1,25 +1,88 @@
 import pandas as pd
 import random, re, numpy as np
 from collections import namedtuple
-#from transformers import AutoTokenizer
-import torch
-from transformers import BertTokenizer
 from collections import defaultdict
 import string, math
+import json
+#from transformers import AutoTokenizer
+
+import torch
+from transformers import BertTokenizer
 
 class Music:
-    def __init__(self, config):
-        self.is_merge_topic = config.is_merge_topic
-        self.is_merge_artist_composer = config.is_merge_artist_composer
-        self.playmusic_path = config.playmusic_path # "../input/skillmusic/data/Play Music AI Data.xlsx"
-        self.musictopic_path = config.musictopic_path # "../input/skillmusic/data/Music Topic Playlists.xlsx"
-        self.by_intents = config.cut_by_intents
-        self.data = pd.read_excel(self.playmusic_path, sheet_name="Data Clean 7.3")
-        self.train_rate = config.train_rate
-        
-        self.prepare_template_by_intent()                   
-        self.read_all_slot()
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
+    def __init__(self, config, read_hard = False):
+        self.tokenizer = BertTokenizer.from_pretrained(config.from_pretrained)
+        self.slot_label_dict = {
+            "else": 0,
+            "@song": 1,
+            "@artist": 2,
+            "@topic": 3,
+            "@sort_by": 4,
+            "@duration": 5,
+            "@timepoint": 6,
+            "@times": 7
+        }
+        self.retrieve_reversed_slot_label_dict = {val:key for key, val in self.slot_label_dict.items()}
+        self.Item = namedtuple("Item", ["text", "bpe", "ids", "slot_label", "pieced_label", "intent", "template"])
+        if read_hard == True:
+            self.read_hard_negative(config.hard_data_path)
+        elif config.is_train == True:
+            self.is_merge_topic = config.is_merge_topic
+            self.is_merge_artist_composer = config.is_merge_artist_composer
+            self.playmusic_path = config.playmusic_path # "../input/skillmusic/data/Play Music AI Data.xlsx"
+            self.musictopic_path = config.musictopic_path # "../input/skillmusic/data/Music Topic Playlists.xlsx"
+            self.by_intents = ["song", "artist", "topic", "sort_by", "loop_song_duration", "loop_song_timepoint",
+                     "general", "song_artist", "song_composer", "composer", "loop_song", "loop_song_times",
+                     "loop_current", "loop_current_duration", "loop_current_timepoint", "loop_current_times",
+                     "artist_duration", "artist_timepoint", "topic_duration", "topic_timepoint", "general_duration",
+                     "general_timepoint", "num_topic", "num_artist"]
+            self.data = pd.read_excel(self.playmusic_path, sheet_name="Data Clean 7.3")
+            self.train_rate = config.train_rate
+            self.prepare_template_by_intent()                   
+            self.read_all_slot()
+            self.cut_to_small_data()
+            self.prepare_slot_dict()
+            self.prepare_train_test()
+            self.generate_train_test_data(is_train=True, loop=1)
+        elif config.hard_data_path is not None:
+            self.read_hard_negative(config.hard_data_path)
+
+    
+    def find_sub_array(self, arr, sub_arr):
+        i,j = 0,0
+        n, m = len(arr), len(sub_arr)
+
+        while i < n:
+            if arr[i] == sub_arr[j]:
+                j += 1
+            else:
+                j = 0
+            if j == m:
+                assert arr[i-j+1:i+1] == sub_arr
+                return (i-j+1,i+1)
+            i += 1
+        return None
+    
+    def read_hard_negative(self, path):
+        self.train_test_generate = []
+        with open(path, "r", encoding="utf8") as f:
+            data = json.load(f)
+        for i,d in enumerate(data):
+            text = self.tokenizer.tokenize(d["text"])
+            ids, ids_type, mask = self.tokenizer(d["text"]).values()
+            slot_label = np.array([0] * len(text))
+            if "label" not in d:
+                continue
+            for l in d["label"]:
+                tok = self.tokenizer.tokenize(l["text"])
+                st, en = self.find_sub_array(text, tok)
+                label = l["labels"][0]
+                indexed = self.slot_label_dict[label]
+                slot_label[st:en] = indexed
+            slot_label = [0] + slot_label.tolist() + [0] # add [CLS]
+            item = self.Item(d["text"], text, ids, "", slot_label, None, None)
+            self.train_test_generate.append(item)
+        return None
         
     def read_all_slot(self):
         if not hasattr(self, "synonym_slot_choice"):
